@@ -37,13 +37,17 @@ jobs:
 
   build-and-deploy:
     name: Build Image and Deploy to Cloud
-    needs: security-scans # 🚨 CRITICAL GATE: Only run this job if all security scans pass clean!
+    needs: security-scans
     runs-on: ubuntu-latest
     steps:
     - name: Checkout Code
       uses: actions/checkout@v4
 
-    # Step 1: Log inside the GitHub Container Registry storage warehouse
+    # 🔄 NEW FIX: Convert repository path to strict lowercase format
+    - name: Downcase Repository Path
+      run: |
+        echo "IMAGE_TAG=ghcr.io/${{ github.repository_owner }}/employee-portal:latest" | tr '[:upper:]' '[:lower:]' >> $GITHUB_ENV
+
     - name: Log in to GitHub Container Registry
       uses: docker/login-action@v3
       with:
@@ -51,34 +55,31 @@ jobs:
         username: ${{ github.actor }}
         password: ${{ secrets.GITHUB_TOKEN }}
 
-    # Step 2: Compile the secure application layers into a production image format
+    # Step 2: Compile the secure application using our downcased environment variable
     - name: Build and Push Secure Docker Image
       uses: docker/build-push-action@v5
       with:
         context: .
         push: true
-        # Formats the destination storage path using lowercase conversions for registry compliance
-        tags: ghcr.io/${{ github.repository_owner }}/employee-portal:latest
+        tags: ${{ env.IMAGE_TAG }} # 🚀 Uses our clean lowercase variable string
 
-    # Step 3: SSH directly into your AWS EC2 instance, install Docker, pull image, and run it
+    # Step 3: SSH Remote Deployment to AWS Cloud Server
     - name: SSH Remote Deployment to AWS Cloud Server
       uses: appleboy/ssh-action@master
       with:
-        host: "98.81.251.167" # Your verified active AWS instance public IP
+        host: "13.220.232.101"
         username: ubuntu
         key: ${{ secrets.SSH_PRIVATE_KEY }}
         script: |
-          # Update packages and install Docker if it isn't present on the cloud instance
           sudo apt-get update -y
           sudo apt-get install -y docker.io
           
-          # Log into the private storage registry from inside the cloud machine
+          # Use the explicit lowercase username path to pull the image on your AWS machine
           echo "${{ secrets.GITHUB_TOKEN }}" | sudo docker login ghcr.io -u "${{ github.actor }}" --password-stdin
           
-          # Safely terminate any old legacy containers to clear up port 5000
           sudo docker stop employee-portal-prod || true
           sudo docker rm employee-portal-prod || true
           
-          # Pull down the freshly scanned, safe version image variation and spin it live!
-          sudo docker pull ghcr.io/${{ github.repository_owner }}/employee-portal:latest
-          sudo docker run -d -p 5000:5000 --name employee-portal-prod --restart unless-stopped ghcr.io/${{ github.repository_owner }}/employee-portal:latest
+          # Explicitly target the lowercase container package path
+          sudo docker pull ghcr.io/haohao99/employee-portal:latest
+          sudo docker run -d -p 5000:5000 --name employee-portal-prod --restart unless-stopped ghcr.io/haohao99/employee-portal:latest
