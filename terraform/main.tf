@@ -49,12 +49,12 @@ resource "aws_security_group" "app_sg" {
 # 2. Provision an AWS EC2 Instance (Virtual Cloud Server)
 resource "aws_instance" "web_server" {
   ami           = "ami-0c7217cdde317cfec" # Official Ubuntu 22.04 LTS AMI (us-east-1)
-  instance_type = "t2.micro"             # 100% Free Tier Eligible instance size
+  instance_type = "t3.micro"             # ✅ UPDATED TO T3 FOR COMPLIANCE
 
   security_groups = [aws_security_group.app_sg.name]
 
   tags = {
-    Name = "DevSecOps-Production-Server"
+    Name    = "DevSecOps-Production-Server"
     Project = "Final-Year-Project"
   }
 }
