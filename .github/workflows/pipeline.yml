@@ -1,6 +1,5 @@
 name: DevSecOps Automated Pipeline
 
-# Trigger this pipeline every time code is pushed to the main branch
 on:
   push:
     branches: [ "main" ]
@@ -11,16 +10,29 @@ jobs:
     runs-on: ubuntu-latest
 
     steps:
-    # Step 1: Download a copy of your repository files onto the GitHub server
+    # Step 1: Download repository files
     - name: Checkout Code
       uses: actions/checkout@v4
+      with:
+        fetch-depth: 0 # Gitleaks needs full history to scan for leaked secrets properly
 
-    # Step 2: Run Trivy to scan the project files for security bugs
+    # Step 2: Run Trivy to scan the container layout configuration
     - name: Run Trivy Container Security Scan
       uses: aquasecurity/trivy-action@master
       with:
         scan-type: 'config'
         hide-progress: false
         format: 'table'
-        exit-code: '1' # 🚨 This tells GitHub to FAIL and stop the pipeline if bugs are found!
+        exit-code: '1'
         severity: 'CRITICAL,HIGH'
+
+    # =======================================================================
+    # 🚨 NEW GUARD: Gitleaks Secret Scanner
+    # This step will scan main.py, find your hardcoded fake key, and fail!
+    # =======================================================================
+    - name: Run Gitleaks Secret Detection Scan
+      uses: gitleaks/gitleaks-action@v2
+      env:
+        GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+      with:
+        args: detect --verbose --redact
