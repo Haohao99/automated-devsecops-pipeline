@@ -1,0 +1,19 @@
+# Local SSH Cryptographic Keys (Must never be uploaded to source control)
+fyp_deploy_key
+fyp_deploy_key.pub
+
+# Hidden Terraform Plugin cache directories
+.terraform/
+.terraform.lock.hcl
+
+# Local state validation management systems
+*.tfstate
+*.tfstate.*
+
+# Crash log outputs
+crash.log
+crash.*.log
+
+# Operating system files
+.DS_Store
+Thumbs.db

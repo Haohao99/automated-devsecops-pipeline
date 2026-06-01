@@ -4,19 +4,21 @@ on:
   push:
     branches: [ "main" ]
 
+# Grant permissions to allow GitHub Actions to build and push container images to GHCR
+permissions:
+  contents: read
+  packages: write
+
 jobs:
   security-scans:
     name: Run DevSecOps Security Checks
     runs-on: ubuntu-latest
-
     steps:
-    # Step 1: Download repository files
     - name: Checkout Code
       uses: actions/checkout@v4
       with:
-        fetch-depth: 0 # Gitleaks needs full history to scan for leaked secrets properly
+        fetch-depth: 0
 
-    # Step 2: Run Trivy to scan the container layout configuration
     - name: Run Trivy Container Security Scan
       uses: aquasecurity/trivy-action@master
       with:
@@ -26,13 +28,57 @@ jobs:
         exit-code: '1'
         severity: 'CRITICAL,HIGH'
 
-    # =======================================================================
-    # 🚨 NEW GUARD: Gitleaks Secret Scanner
-    # This step will scan main.py, find your hardcoded fake key, and fail!
-    # =======================================================================
     - name: Run Gitleaks Secret Detection Scan
       uses: gitleaks/gitleaks-action@v2
       env:
         GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
       with:
         args: detect --verbose --redact
+
+  build-and-deploy:
+    name: Build Image and Deploy to Cloud
+    needs: security-scans # 🚨 CRITICAL GATE: Only run this job if all security scans pass clean!
+    runs-on: ubuntu-latest
+    steps:
+    - name: Checkout Code
+      uses: actions/checkout@v4
+
+    # Step 1: Log inside the GitHub Container Registry storage warehouse
+    - name: Log in to GitHub Container Registry
+      uses: docker/login-action@v3
+      with:
+        registry: ghcr.io
+        username: ${{ github.actor }}
+        password: ${{ secrets.GITHUB_TOKEN }}
+
+    # Step 2: Compile the secure application layers into a production image format
+    - name: Build and Push Secure Docker Image
+      uses: docker/build-push-action@v5
+      with:
+        context: .
+        push: true
+        # Formats the destination storage path using lowercase conversions for registry compliance
+        tags: ghcr.io/${{ github.repository_owner }}/employee-portal:latest
+
+    # Step 3: SSH directly into your AWS EC2 instance, install Docker, pull image, and run it
+    - name: SSH Remote Deployment to AWS Cloud Server
+      uses: appleboy/ssh-action@master
+      with:
+        host: "98.81.251.167" # Your verified active AWS instance public IP
+        username: ubuntu
+        key: ${{ secrets.SSH_PRIVATE_KEY }}
+        script: |
+          # Update packages and install Docker if it isn't present on the cloud instance
+          sudo apt-get update -y
+          sudo apt-get install -y docker.io
+          
+          # Log into the private storage registry from inside the cloud machine
+          echo "${{ secrets.GITHUB_TOKEN }}" | sudo docker login ghcr.io -u "${{ github.actor }}" --password-stdin
+          
+          # Safely terminate any old legacy containers to clear up port 5000
+          sudo docker stop employee-portal-prod || true
+          sudo docker rm employee-portal-prod || true
+          
+          # Pull down the freshly scanned, safe version image variation and spin it live!
+          sudo docker pull ghcr.io/${{ github.repository_owner }}/employee-portal:latest
+          sudo docker run -d -p 5000:5000 --name employee-portal-prod --restart unless-stopped ghcr.io/${{ github.repository_owner }}/employee-portal:latest
