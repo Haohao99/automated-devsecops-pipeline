@@ -65,24 +65,24 @@ jobs:
         push: true
         tags: ${{ steps.string.outputs.tag }} # Reads the validated lowercase string perfectly!
 
-    # Step 3: SSH Remote Deployment to AWS Cloud Server
+    # Step 3: SSH directly into your AWS EC2 instance, install Docker, pull image, and run it
     - name: SSH Remote Deployment to AWS Cloud Server
       uses: appleboy/ssh-action@master
       with:
-        host: "13.220.232.101" # Your running AWS EC2 Public IP address
+        host: "54.224.236.19" # 🚀 UPDATED WITH YOUR NEW ACTIVE PUBLIC IP
         username: ubuntu
         key: ${{ secrets.SSH_PRIVATE_KEY }}
         script: |
           sudo apt-get update -y
           sudo apt-get install -y docker.io
           
-          # Log into the GitHub registry from inside your remote cloud instance
+          # Log into the private GitHub registry from inside the remote EC2 machine
           echo "${{ secrets.GITHUB_TOKEN }}" | sudo docker login ghcr.io -u "${{ github.actor }}" --password-stdin
           
-          # Clean out old running test subjects to release web tracking port 5000
+          # Terminate any legacy containers to cleanly free up your web port
           sudo docker stop employee-portal-prod || true
           sudo docker rm employee-portal-prod || true
           
-          # Pull down the verified, passing image version and launch it live!
+          # Pull down the verified, freshly scanned image and spin it live!
           sudo docker pull ghcr.io/haohao99/employee-portal:latest
           sudo docker run -d -p 5000:5000 --name employee-portal-prod --restart unless-stopped ghcr.io/haohao99/employee-portal:latest
