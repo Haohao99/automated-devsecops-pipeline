@@ -1,0 +1,26 @@
+name: DevSecOps Automated Pipeline
+
+# Trigger this pipeline every time code is pushed to the main branch
+on:
+  push:
+    branches: [ "main" ]
+
+jobs:
+  security-scans:
+    name: Run DevSecOps Security Checks
+    runs-on: ubuntu-latest
+
+    steps:
+    # Step 1: Download a copy of your repository files onto the GitHub server
+    - name: Checkout Code
+      uses: actions/checkout@v4
+
+    # Step 2: Run Trivy to scan the project files for security bugs
+    - name: Run Trivy Container Security Scan
+      uses: aquasecurity/trivy-action@master
+      with:
+        scan-type: 'config'
+        hide-progress: false
+        format: 'table'
+        exit-code: '1' # 🚨 This tells GitHub to FAIL and stop the pipeline if bugs are found!
+        severity: 'CRITICAL,HIGH'
