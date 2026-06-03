@@ -1,5 +1,5 @@
 # =======================================================================
-# ☁️ HARDENED TERRAFORM CONFIGURATION (COMPLIANCE APPROVED)
+# ☁️ HARDENED TERRAFORM CONFIGURATION (PHASE 5 OBSERVABILITY METRICS)
 # =======================================================================
 
 terraform {
@@ -28,11 +28,11 @@ resource "aws_security_group" "app_sg" {
 
   # trivy:ignore:aws-ec2-no-public-ingress-sgr
   ingress {
-    description = "Allow SSH management"
+    description = "Allow SSH management and GitHub Actions Deployments"
     from_port   = 22
     to_port     = 22
     protocol    = "tcp"
-    cidr_blocks = ["0.0.0.0/0"] # Required to accept automated deployments from dynamic GitHub runner IPs
+    cidr_blocks = ["0.0.0.0/0"]
   }
 
   ingress {
@@ -43,13 +43,31 @@ resource "aws_security_group" "app_sg" {
     cidr_blocks = ["0.0.0.0/0"]
   }
 
+  # 📊 Allow Prometheus Web Console Access
+  ingress {
+    description = "Allow Prometheus Monitoring Access"
+    from_port   = 9090
+    to_port     = 9090
+    protocol    = "tcp"
+    cidr_blocks = ["0.0.0.0/0"]
+  }
+
+  # 📈 Allow Grafana Visual Dashboard Access
+  ingress {
+    description = "Allow Grafana Dashboard Access"
+    from_port   = 3000
+    to_port     = 3000
+    protocol    = "tcp"
+    cidr_blocks = ["0.0.0.0/0"]
+  }
+
   # trivy:ignore:aws-ec2-no-public-egress-sgr
   egress {
     description = "Allow outbound web tracking updates only"
     from_port   = 80
     to_port     = 80
     protocol    = "tcp"
-    cidr_blocks = ["0.0.0.0/0"] # Required to update system packages from Ubuntu repositories
+    cidr_blocks = ["0.0.0.0/0"]
   }
 
   # trivy:ignore:aws-ec2-no-public-egress-sgr
@@ -58,7 +76,7 @@ resource "aws_security_group" "app_sg" {
     from_port   = 443
     to_port     = 443
     protocol    = "tcp"
-    cidr_blocks = ["0.0.0.0/0"] # Required to securely pull Docker containers from ghcr.io
+    cidr_blocks = ["0.0.0.0/0"]
   }
 }
 
@@ -67,19 +85,17 @@ resource "aws_instance" "web_server" {
   ami           = "ami-0c7217cdde317cfec" # Official Ubuntu 22.04 LTS AMI
   instance_type = "t3.micro"
 
-  key_name        = aws_key_pair.deployer.key_name
-  security_groups = [aws_security_group.app_sg.name]
+  key_name               = aws_key_pair.deployer.key_name
+  vpc_security_group_ids = [aws_security_group.app_sg.id] # Fixed attachment array parameters
 
-  # Explicitly encrypt the root storage volume at rest
   root_block_device {
     encrypted   = true
     volume_type = "gp3"
   }
 
-  # Force IMDSv2 session tokens to be strictly REQUIRED
   metadata_options {
     http_endpoint               = "enabled"
-    http_tokens                 = "required" # Blocks unauthenticated key extraction
+    http_tokens                 = "required" # Enforce IMDSv2
     http_put_response_hop_limit = 1
   }
 
@@ -89,7 +105,21 @@ resource "aws_instance" "web_server" {
   }
 }
 
+# =======================================================================
+# 📋 SYSTEM AUTOMATION OUTPUT LINK GENERATORS
+# =======================================================================
+
 output "production_server_public_ip" {
   value       = aws_instance.web_server.public_ip
   description = "The public IP address of your live production cloud server"
+}
+
+output "application_url" {
+  value       = "http://${aws_instance.web_server.public_ip}:5000"
+  description = "Direct web browser link to your live Python Flask Employee Portal app"
+}
+
+output "grafana_url" {
+  value       = "http://${aws_instance.web_server.public_ip}:3000"
+  description = "Direct web browser link to your Grafana Observability Dashboards"
 }
