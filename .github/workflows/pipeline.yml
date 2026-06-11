@@ -69,7 +69,7 @@ jobs:
     - name: SSH Remote Deployment to AWS Cloud Server
       uses: appleboy/ssh-action@master
       with:
-        host: "32.198.20.158" # 🚀 UPDATED WITH YOUR NEW ACTIVE PUBLIC IP
+        host: "35.172.115.137" # 🚀 UPDATED WITH YOUR NEW ACTIVE PUBLIC IP
         username: ubuntu
         key: ${{ secrets.SSH_PRIVATE_KEY }}
         script: |
