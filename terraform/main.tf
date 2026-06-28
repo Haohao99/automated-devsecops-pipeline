@@ -17,7 +17,7 @@ provider "aws" {
 
 variable "admin_cidr" {
   type    = string
-  default = "54.173.93.118/32"
+  default = "60.53.33.25/32"
 }
 
 variable "db_username" {
