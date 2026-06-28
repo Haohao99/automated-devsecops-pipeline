@@ -15,9 +15,10 @@ provider "aws" {
   region = "us-east-1"
 }
 
-# =======================================================================
-# 🔐 VARIABLES
-# =======================================================================
+variable "admin_cidr" {
+  type    = string
+  default = "54.173.93.118/32"
+}
 
 variable "db_username" {
   type    = string
@@ -28,10 +29,6 @@ variable "db_password" {
   type      = string
   sensitive = true
 }
-
-# =======================================================================
-# 🌐 DEFAULT VPC + SUBNETS
-# =======================================================================
 
 data "aws_vpc" "default" {
   default = true
@@ -44,10 +41,6 @@ data "aws_subnets" "default" {
   }
 }
 
-# =======================================================================
-# 🔑 EC2 KEY PAIR
-# =======================================================================
-
 resource "aws_key_pair" "deployer" {
   key_name   = "fyp-deploy-key"
   public_key = file("../fyp_deploy_key.pub")
@@ -59,53 +52,75 @@ resource "aws_key_pair" "deployer" {
 
 resource "aws_security_group" "app_sg" {
   name        = "employee-portal-security-group-secure"
-  description = "Allow SSH, Flask, Prometheus, and Grafana traffic"
+  description = "Security group for Flask app, Prometheus, Grafana and SSH"
   vpc_id      = data.aws_vpc.default.id
-
-  ingress {
-    description = "Allow SSH management"
-    from_port   = 22
-    to_port     = 22
-    protocol    = "tcp"
-    cidr_blocks = ["0.0.0.0/0"]
-  }
-
-  ingress {
-    description = "Allow Flask web traffic"
-    from_port   = 5000
-    to_port     = 5000
-    protocol    = "tcp"
-    cidr_blocks = ["0.0.0.0/0"]
-  }
-
-  ingress {
-    description = "Allow Prometheus Monitoring Access"
-    from_port   = 9090
-    to_port     = 9090
-    protocol    = "tcp"
-    cidr_blocks = ["0.0.0.0/0"]
-  }
-
-  ingress {
-    description = "Allow Grafana Dashboard Access"
-    from_port   = 3000
-    to_port     = 3000
-    protocol    = "tcp"
-    cidr_blocks = ["0.0.0.0/0"]
-  }
-
-  egress {
-    description = "Allow outbound traffic, including database connection to RDS"
-    from_port   = 0
-    to_port     = 0
-    protocol    = "-1"
-    cidr_blocks = ["0.0.0.0/0"]
-  }
 
   tags = {
     Name    = "DevSecOps-App-Security-Group"
     Project = "Final-Year-Project"
   }
+}
+
+resource "aws_security_group_rule" "app_ssh_ingress" {
+  type              = "ingress"
+  description       = "Allow SSH from admin IP only"
+  from_port         = 22
+  to_port           = 22
+  protocol          = "tcp"
+  cidr_blocks       = [var.admin_cidr]
+  security_group_id = aws_security_group.app_sg.id
+}
+
+resource "aws_security_group_rule" "app_flask_ingress" {
+  type              = "ingress"
+  description       = "Allow Flask web traffic"
+  from_port         = 5000
+  to_port           = 5000
+  protocol          = "tcp"
+  cidr_blocks       = ["0.0.0.0/0"]
+  security_group_id = aws_security_group.app_sg.id
+}
+
+resource "aws_security_group_rule" "app_prometheus_ingress" {
+  type              = "ingress"
+  description       = "Allow Prometheus access"
+  from_port         = 9090
+  to_port           = 9090
+  protocol          = "tcp"
+  cidr_blocks       = ["0.0.0.0/0"]
+  security_group_id = aws_security_group.app_sg.id
+}
+
+resource "aws_security_group_rule" "app_grafana_ingress" {
+  type              = "ingress"
+  description       = "Allow Grafana access"
+  from_port         = 3000
+  to_port           = 3000
+  protocol          = "tcp"
+  cidr_blocks       = ["0.0.0.0/0"]
+  security_group_id = aws_security_group.app_sg.id
+}
+
+# trivy:ignore:AWS-0104
+resource "aws_security_group_rule" "app_http_egress" {
+  type              = "egress"
+  description       = "Allow HTTP outbound for package updates"
+  from_port         = 80
+  to_port           = 80
+  protocol          = "tcp"
+  cidr_blocks       = ["0.0.0.0/0"]
+  security_group_id = aws_security_group.app_sg.id
+}
+
+# trivy:ignore:AWS-0104
+resource "aws_security_group_rule" "app_https_egress" {
+  type              = "egress"
+  description       = "Allow HTTPS outbound for Docker, GitHub and updates"
+  from_port         = 443
+  to_port           = 443
+  protocol          = "tcp"
+  cidr_blocks       = ["0.0.0.0/0"]
+  security_group_id = aws_security_group.app_sg.id
 }
 
 # =======================================================================
@@ -114,24 +129,8 @@ resource "aws_security_group" "app_sg" {
 
 resource "aws_security_group" "rds_sg" {
   name        = "campus-ledger-rds-sg"
-  description = "Allow MySQL access from EC2 Flask app only"
+  description = "Allow MySQL access from EC2 only"
   vpc_id      = data.aws_vpc.default.id
-
-  ingress {
-    description     = "Allow MySQL from EC2 app server only"
-    from_port       = 3306
-    to_port         = 3306
-    protocol        = "tcp"
-    security_groups = [aws_security_group.app_sg.id]
-  }
-
-  egress {
-    description = "Allow outbound responses"
-    from_port   = 0
-    to_port     = 0
-    protocol    = "-1"
-    cidr_blocks = ["0.0.0.0/0"]
-  }
 
   tags = {
     Name    = "Campus-Ledger-RDS-Security-Group"
@@ -139,8 +138,28 @@ resource "aws_security_group" "rds_sg" {
   }
 }
 
+resource "aws_security_group_rule" "rds_mysql_ingress" {
+  type                     = "ingress"
+  description              = "Allow MySQL from Flask EC2 only"
+  from_port                = 3306
+  to_port                  = 3306
+  protocol                 = "tcp"
+  source_security_group_id = aws_security_group.app_sg.id
+  security_group_id        = aws_security_group.rds_sg.id
+}
+
+resource "aws_security_group_rule" "app_mysql_egress" {
+  type                     = "egress"
+  description              = "Allow MySQL outbound to RDS"
+  from_port                = 3306
+  to_port                  = 3306
+  protocol                 = "tcp"
+  source_security_group_id = aws_security_group.rds_sg.id
+  security_group_id        = aws_security_group.app_sg.id
+}
+
 # =======================================================================
-# 🗄️ RDS SUBNET GROUP
+# 🗄️ RDS MYSQL DATABASE
 # =======================================================================
 
 resource "aws_db_subnet_group" "campus_db_subnet_group" {
@@ -152,10 +171,6 @@ resource "aws_db_subnet_group" "campus_db_subnet_group" {
     Project = "Final-Year-Project"
   }
 }
-
-# =======================================================================
-# 🗄️ RDS MYSQL DATABASE
-# =======================================================================
 
 resource "aws_db_instance" "campus_ledger_db" {
   identifier = "campus-ledger-db"
@@ -175,10 +190,10 @@ resource "aws_db_instance" "campus_ledger_db" {
   db_subnet_group_name   = aws_db_subnet_group.campus_db_subnet_group.name
   vpc_security_group_ids = [aws_security_group.rds_sg.id]
 
-  publicly_accessible      = false
-  backup_retention_period  = 7
-  skip_final_snapshot      = true
-  deletion_protection      = false
+  publicly_accessible       = false
+  backup_retention_period   = 7
+  skip_final_snapshot       = true
+  deletion_protection       = false
   auto_minor_version_upgrade = true
 
   tags = {
