@@ -15,11 +15,6 @@ provider "aws" {
   region = "us-east-1"
 }
 
-variable "admin_cidr" {
-  type    = string
-  default = "60.53.33.25/32"
-}
-
 variable "db_username" {
   type    = string
   default = "admin"
@@ -46,10 +41,6 @@ resource "aws_key_pair" "deployer" {
   public_key = file("../fyp_deploy_key.pub")
 }
 
-# =======================================================================
-# 🛡️ EC2 SECURITY GROUP
-# =======================================================================
-
 resource "aws_security_group" "app_sg" {
   name        = "employee-portal-security-group-secure"
   description = "Allow inbound SSH, HTTP, and Flask traffic under secure parameters"
@@ -61,13 +52,14 @@ resource "aws_security_group" "app_sg" {
   }
 }
 
+# trivy:ignore:AWS-0107
 resource "aws_security_group_rule" "app_ssh_ingress" {
   type              = "ingress"
-  description       = "Allow SSH from admin IP only"
+  description       = "Allow SSH for GitHub Actions deployment"
   from_port         = 22
   to_port           = 22
   protocol          = "tcp"
-  cidr_blocks       = [var.admin_cidr]
+  cidr_blocks       = ["0.0.0.0/0"]
   security_group_id = aws_security_group.app_sg.id
 }
 
@@ -123,10 +115,6 @@ resource "aws_security_group_rule" "app_https_egress" {
   security_group_id = aws_security_group.app_sg.id
 }
 
-# =======================================================================
-# 🗄️ RDS SECURITY GROUP
-# =======================================================================
-
 resource "aws_security_group" "rds_sg" {
   name        = "campus-ledger-rds-sg"
   description = "Allow MySQL access from EC2 only"
@@ -158,10 +146,6 @@ resource "aws_security_group_rule" "app_mysql_egress" {
   security_group_id        = aws_security_group.app_sg.id
 }
 
-# =======================================================================
-# 🗄️ RDS MYSQL DATABASE
-# =======================================================================
-
 resource "aws_db_subnet_group" "campus_db_subnet_group" {
   name       = "campus-ledger-db-subnet-group"
   subnet_ids = data.aws_subnets.default.ids
@@ -190,10 +174,10 @@ resource "aws_db_instance" "campus_ledger_db" {
   db_subnet_group_name   = aws_db_subnet_group.campus_db_subnet_group.name
   vpc_security_group_ids = [aws_security_group.rds_sg.id]
 
-  publicly_accessible       = false
-  backup_retention_period   = 7
-  skip_final_snapshot       = true
-  deletion_protection       = false
+  publicly_accessible        = false
+  backup_retention_period    = 7
+  skip_final_snapshot        = true
+  deletion_protection        = false
   auto_minor_version_upgrade = true
 
   tags = {
@@ -201,10 +185,6 @@ resource "aws_db_instance" "campus_ledger_db" {
     Project = "Final-Year-Project"
   }
 }
-
-# =======================================================================
-# 💻 EC2 INSTANCE
-# =======================================================================
 
 resource "aws_instance" "web_server" {
   ami           = "ami-0c7217cdde317cfec"
@@ -229,10 +209,6 @@ resource "aws_instance" "web_server" {
     Project = "Final-Year-Project"
   }
 }
-
-# =======================================================================
-# 📋 OUTPUTS
-# =======================================================================
 
 output "production_server_public_ip" {
   value       = aws_instance.web_server.public_ip
