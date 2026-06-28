@@ -4,7 +4,6 @@ on:
   push:
     branches: [ "main" ]
 
-# Grant permissions to allow GitHub Actions to build and push container images to GHCR
 permissions:
   contents: read
   packages: write
@@ -13,76 +12,81 @@ jobs:
   security-scans:
     name: Run DevSecOps Security Checks
     runs-on: ubuntu-latest
+
     steps:
-    - name: Checkout Code
-      uses: actions/checkout@v4
-      with:
-        fetch-depth: 0
+      - name: Checkout Code
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
 
-    - name: Run Trivy Container Security Scan
-      uses: aquasecurity/trivy-action@master
-      with:
-        scan-type: 'config'
-        hide-progress: false
-        format: 'table'
-        exit-code: '1'
-        severity: 'CRITICAL,HIGH'
+      - name: Run Trivy Container Security Scan
+        uses: aquasecurity/trivy-action@master
+        with:
+          scan-type: 'config'
+          hide-progress: false
+          format: 'table'
+          exit-code: '1'
+          severity: 'CRITICAL,HIGH'
 
-    - name: Run Gitleaks Secret Detection Scan
-      uses: gitleaks/gitleaks-action@v2
-      env:
-        GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-      with:
-        args: detect --verbose --redact
+      - name: Run Gitleaks Secret Detection Scan
+        uses: gitleaks/gitleaks-action@v2
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        with:
+          args: detect --verbose --redact
 
   build-and-deploy:
     name: Build Image and Deploy to Cloud
     needs: security-scans
     runs-on: ubuntu-latest
+
     steps:
-    - name: Checkout Code
-      uses: actions/checkout@v4
+      - name: Checkout Code
+        uses: actions/checkout@v4
 
-    # 🔄 FIX: Create the lowercase repository path cleanly using standard step outputs
-    - name: Prepare Lowercase Image Tag Target
-      id: string
-      run: |
-        IMAGE_PATH="ghcr.io/${{ github.repository_owner }}/employee-portal:latest"
-        echo "tag=$(echo "$IMAGE_PATH" | tr '[:upper:]' '[:lower:]')" >> $GITHUB_OUTPUT
+      - name: Prepare Lowercase Image Tag Target
+        id: string
+        run: |
+          IMAGE_PATH="ghcr.io/${{ github.repository_owner }}/employee-portal:latest"
+          echo "tag=$(echo "$IMAGE_PATH" | tr '[:upper:]' '[:lower:]')" >> $GITHUB_OUTPUT
 
-    - name: Log in to GitHub Container Registry
-      uses: docker/login-action@v3
-      with:
-        registry: ghcr.io
-        username: ${{ github.actor }}
-        password: ${{ secrets.GITHUB_TOKEN }}
+      - name: Log in to GitHub Container Registry
+        uses: docker/login-action@v3
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
 
-    # 🚀 FIX: Pass the explicit step output value directly into the tags field
-    - name: Build and Push Secure Docker Image
-      uses: docker/build-push-action@v5
-      with:
-        context: .
-        push: true
-        tags: ${{ steps.string.outputs.tag }} # Reads the validated lowercase string perfectly!
+      - name: Build and Push Secure Docker Image
+        uses: docker/build-push-action@v5
+        with:
+          context: .
+          push: true
+          tags: ${{ steps.string.outputs.tag }}
 
-    # Step 3: SSH directly into your AWS EC2 instance, install Docker, pull image, and run it
-    - name: SSH Remote Deployment to AWS Cloud Server
-      uses: appleboy/ssh-action@master
-      with:
-        host: "34.224.74.147" # 🚀 UPDATED WITH YOUR NEW ACTIVE PUBLIC IP
-        username: ubuntu
-        key: ${{ secrets.SSH_PRIVATE_KEY }}
-        script: |
-          sudo apt-get update -y
-          sudo apt-get install -y docker.io
-          
-          # Log into the private GitHub registry from inside the remote EC2 machine
-          echo "${{ secrets.GITHUB_TOKEN }}" | sudo docker login ghcr.io -u "${{ github.actor }}" --password-stdin
-          
-          # Terminate any legacy containers to cleanly free up your web port
-          sudo docker stop employee-portal-prod || true
-          sudo docker rm employee-portal-prod || true
-          
-          # Pull down the verified, freshly scanned image and spin it live!
-          sudo docker pull ghcr.io/haohao99/employee-portal:latest
-          sudo docker run -d -p 5000:5000 --name employee-portal-prod --restart unless-stopped ghcr.io/haohao99/employee-portal:latest
+      - name: SSH Remote Deployment to AWS Cloud Server
+        uses: appleboy/ssh-action@master
+        with:
+          host: "34.224.74.147"
+          username: ubuntu
+          key: ${{ secrets.SSH_PRIVATE_KEY }}
+          script: |
+            sudo apt-get update -y
+            sudo apt-get install -y docker.io
+
+            echo "${{ secrets.GITHUB_TOKEN }}" | sudo docker login ghcr.io -u "${{ github.actor }}" --password-stdin
+
+            sudo docker stop employee-portal-prod || true
+            sudo docker rm employee-portal-prod || true
+
+            sudo docker pull ghcr.io/haohao99/employee-portal:latest
+
+            sudo docker run -d \
+              --name employee-portal-prod \
+              --restart unless-stopped \
+              -p 5000:5000 \
+              -e DB_HOST=campus-ledger-db.cyzswwiwut1f.us-east-1.rds.amazonaws.com \
+              -e DB_USER=admin \
+              -e DB_PASSWORD='${{ secrets.DB_PASSWORD }}' \
+              -e DB_NAME=campus_ledger \
+              ghcr.io/haohao99/employee-portal:latest
