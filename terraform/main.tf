@@ -52,7 +52,7 @@ resource "aws_key_pair" "deployer" {
 
 resource "aws_security_group" "app_sg" {
   name        = "employee-portal-security-group-secure"
-  description = "Security group for Flask app, Prometheus, Grafana and SSH"
+  description = "Allow inbound SSH, HTTP, and Flask traffic under secure parameters"
   vpc_id      = data.aws_vpc.default.id
 
   tags = {
