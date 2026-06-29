@@ -1,25 +1,134 @@
-from flask import Flask, render_template_string, request, redirect, url_for, session
+from flask import (
+    Flask,
+    render_template_string,
+    request,
+    redirect,
+    url_for,
+    session,
+    Response,
+    jsonify,
+)
 import pymysql
 import os
+import time
 from datetime import datetime
+from decimal import Decimal
+
+from prometheus_client import (
+    Counter,
+    Histogram,
+    Gauge,
+    generate_latest,
+    CONTENT_TYPE_LATEST,
+)
 
 app = Flask(__name__)
 app.secret_key = os.getenv("SECRET_KEY", "change_this_secret_key")
+
+# ============================================================
+# Database configuration
+# ============================================================
 
 DB_HOST = os.getenv("DB_HOST")
 DB_USER = os.getenv("DB_USER", "admin")
 DB_PASSWORD = os.getenv("DB_PASSWORD")
 DB_NAME = os.getenv("DB_NAME", "campus_ledger")
+DB_PORT = int(os.getenv("DB_PORT", "3306"))
 
+# ============================================================
+# Prometheus metrics
+# ============================================================
+
+APP_UP = Gauge(
+    "employee_portal_app_up",
+    "Whether the Flask employee portal application is running",
+)
+
+DB_UP = Gauge(
+    "employee_portal_database_up",
+    "Whether the application can connect to the MySQL database",
+)
+
+CLUBS_TOTAL = Gauge(
+    "employee_portal_clubs_total",
+    "Total number of clubs",
+)
+
+USERS_TOTAL = Gauge(
+    "employee_portal_users_total",
+    "Total number of users",
+)
+
+TRANSACTIONS_TOTAL = Gauge(
+    "employee_portal_transactions_total",
+    "Total number of transactions",
+)
+
+PENDING_TRANSACTIONS_TOTAL = Gauge(
+    "employee_portal_pending_transactions_total",
+    "Total number of pending transactions",
+)
+
+TOTAL_BUDGET = Gauge(
+    "employee_portal_total_budget",
+    "Total budget across all clubs",
+)
+
+TOTAL_BALANCE = Gauge(
+    "employee_portal_total_balance",
+    "Total remaining balance across all clubs",
+)
+
+HTTP_REQUESTS_TOTAL = Counter(
+    "flask_http_requests_total",
+    "Total number of HTTP requests",
+    ["method", "endpoint", "http_status"],
+)
+
+HTTP_REQUEST_DURATION = Histogram(
+    "flask_http_request_duration_seconds",
+    "HTTP request duration in seconds",
+    ["endpoint"],
+)
+
+
+@app.before_request
+def start_timer():
+    request.start_time = time.time()
+
+
+@app.after_request
+def record_request_metrics(response):
+    endpoint = request.endpoint or request.path
+    duration = time.time() - getattr(request, "start_time", time.time())
+
+    HTTP_REQUESTS_TOTAL.labels(
+        method=request.method,
+        endpoint=endpoint,
+        http_status=str(response.status_code),
+    ).inc()
+
+    HTTP_REQUEST_DURATION.labels(endpoint=endpoint).observe(duration)
+
+    return response
+
+
+# ============================================================
+# Database helper functions
+# ============================================================
 
 def get_db():
+    if not DB_HOST:
+        raise RuntimeError("DB_HOST environment variable is missing")
+
     return pymysql.connect(
         host=DB_HOST,
+        port=DB_PORT,
         user=DB_USER,
         password=DB_PASSWORD,
         database=DB_NAME,
         cursorclass=pymysql.cursors.DictCursor,
-        autocommit=False
+        autocommit=False,
     )
 
 
@@ -66,7 +175,7 @@ def init_db():
         """, [
             ("CSC", "Computer Science Society", 2500.00, 1240.50, 150),
             ("ROB", "Robotics & Engineering Club", 4000.00, 450.00, 20),
-            ("SBC", "Student Business Council", 1500.00, 1500.00, 0)
+            ("SBC", "Student Business Council", 1500.00, 1500.00, 0),
         ])
 
     cur.execute("SELECT COUNT(*) AS count FROM users")
@@ -76,12 +185,84 @@ def init_db():
             VALUES (%s, %s, %s)
         """, [
             ("admin", "admin123", "admin"),
-            ("treasurer", "club123", "treasurer")
+            ("treasurer", "club123", "treasurer"),
         ])
 
     conn.commit()
     conn.close()
 
+
+def check_database():
+    try:
+        conn = get_db()
+        conn.close()
+        DB_UP.set(1)
+        return True
+    except Exception:
+        DB_UP.set(0)
+        return False
+
+
+def update_custom_metrics():
+    APP_UP.set(1)
+
+    try:
+        conn = get_db()
+        cur = conn.cursor()
+
+        DB_UP.set(1)
+
+        cur.execute("SELECT COUNT(*) AS count FROM clubs")
+        CLUBS_TOTAL.set(cur.fetchone()["count"])
+
+        cur.execute("SELECT COUNT(*) AS count FROM users")
+        USERS_TOTAL.set(cur.fetchone()["count"])
+
+        cur.execute("SELECT COUNT(*) AS count FROM transactions")
+        TRANSACTIONS_TOTAL.set(cur.fetchone()["count"])
+
+        cur.execute("SELECT COUNT(*) AS count FROM transactions WHERE status='Pending'")
+        PENDING_TRANSACTIONS_TOTAL.set(cur.fetchone()["count"])
+
+        cur.execute("SELECT COALESCE(SUM(budget), 0) AS total_budget FROM clubs")
+        TOTAL_BUDGET.set(float(cur.fetchone()["total_budget"]))
+
+        cur.execute("SELECT COALESCE(SUM(balance), 0) AS total_balance FROM clubs")
+        TOTAL_BALANCE.set(float(cur.fetchone()["total_balance"]))
+
+        conn.close()
+
+    except Exception:
+        DB_UP.set(0)
+
+
+def make_json_safe(value):
+    if isinstance(value, Decimal):
+        return float(value)
+    if isinstance(value, datetime):
+        return value.isoformat()
+    return value
+
+
+def rows_to_json_safe(rows):
+    safe_rows = []
+
+    for row in rows:
+        safe_row = {}
+        for key, value in row.items():
+            safe_row[key] = make_json_safe(value)
+        safe_rows.append(safe_row)
+
+    return safe_rows
+
+
+def login_required():
+    return "username" in session
+
+
+# ============================================================
+# HTML templates
+# ============================================================
 
 UI = """
 <!DOCTYPE html>
@@ -102,6 +283,7 @@ UI = """
         .success { background:#16a34a; }
         .grid { display:grid; grid-template-columns: 2fr 1fr; gap:20px; }
         .msg { background:#fef3c7; padding:10px; border-radius:6px; margin-bottom:15px; }
+        .links a { margin-right: 15px; color: #2563eb; font-weight: bold; }
     </style>
 </head>
 <body>
@@ -119,6 +301,13 @@ UI = """
     {% if message %}
     <div class="msg">{{ message }}</div>
     {% endif %}
+
+    <div class="card links">
+        <b>Monitoring Links:</b>
+        <a href="/health">Health Check</a>
+        <a href="/metrics">Prometheus Metrics</a>
+        <a href="/api/v1/treasury">Treasury API</a>
+    </div>
 
     <div class="grid">
         <div>
@@ -213,7 +402,6 @@ UI = """
 </html>
 """
 
-
 LOGIN_UI = """
 <!DOCTYPE html>
 <html>
@@ -251,9 +439,9 @@ LOGIN_UI = """
 """
 
 
-def login_required():
-    return "username" in session
-
+# ============================================================
+# Routes
+# ============================================================
 
 @app.route("/")
 def dashboard():
@@ -264,13 +452,21 @@ def dashboard():
 
     conn = get_db()
     cur = conn.cursor()
+
     cur.execute("SELECT * FROM clubs ORDER BY id ASC")
     clubs = cur.fetchall()
+
     cur.execute("SELECT * FROM transactions ORDER BY id DESC")
     transactions = cur.fetchall()
+
     conn.close()
 
-    return render_template_string(UI, clubs=clubs, transactions=transactions, message=message)
+    return render_template_string(
+        UI,
+        clubs=clubs,
+        transactions=transactions,
+        message=message,
+    )
 
 
 @app.route("/login", methods=["GET", "POST"])
@@ -283,10 +479,12 @@ def login():
 
         conn = get_db()
         cur = conn.cursor()
+
         cur.execute(
             "SELECT * FROM users WHERE username=%s AND password=%s",
-            (username, password)
+            (username, password),
         )
+
         user = cur.fetchone()
         conn.close()
 
@@ -324,7 +522,12 @@ def submit_transaction():
     cur.execute("""
         INSERT INTO transactions (club_code, amount, category, status, created_at)
         VALUES (%s, %s, %s, 'Pending', %s)
-    """, (club_code, amount, category, datetime.now().strftime("%Y-%m-%d %H:%M:%S")))
+    """, (
+        club_code,
+        amount,
+        category,
+        datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
+    ))
 
     conn.commit()
     conn.close()
@@ -350,11 +553,23 @@ def approve_transaction(tx_id):
         if club and float(club["balance"]) >= float(tx["amount"]):
             new_balance = float(club["balance"]) - float(tx["amount"])
 
-            cur.execute("UPDATE clubs SET balance=%s WHERE code=%s", (new_balance, tx["club_code"]))
-            cur.execute("UPDATE transactions SET status='Approved' WHERE id=%s", (tx_id,))
+            cur.execute(
+                "UPDATE clubs SET balance=%s WHERE code=%s",
+                (new_balance, tx["club_code"]),
+            )
+
+            cur.execute(
+                "UPDATE transactions SET status='Approved' WHERE id=%s",
+                (tx_id,),
+            )
+
             message = "Transaction approved."
         else:
-            cur.execute("UPDATE transactions SET status='Rejected' WHERE id=%s", (tx_id,))
+            cur.execute(
+                "UPDATE transactions SET status='Rejected' WHERE id=%s",
+                (tx_id,),
+            )
+
             message = "Transaction rejected due to insufficient balance."
 
         conn.commit()
@@ -362,6 +577,7 @@ def approve_transaction(tx_id):
         message = "Transaction not found or already processed."
 
     conn.close()
+
     return redirect(url_for("dashboard", message=message))
 
 
@@ -372,7 +588,9 @@ def reject_transaction(tx_id):
 
     conn = get_db()
     cur = conn.cursor()
+
     cur.execute("UPDATE transactions SET status='Rejected' WHERE id=%s", (tx_id,))
+
     conn.commit()
     conn.close()
 
@@ -404,7 +622,12 @@ def add_club():
     cur.execute("""
         INSERT INTO clubs (code, name, budget, balance, tickets_sold)
         VALUES (%s, %s, %s, %s, 0)
-    """, (code, name, budget, budget))
+    """, (
+        code,
+        name,
+        budget,
+        budget,
+    ))
 
     conn.commit()
     conn.close()
@@ -416,13 +639,70 @@ def add_club():
 def treasury_api():
     conn = get_db()
     cur = conn.cursor()
+
     cur.execute("SELECT * FROM clubs ORDER BY id ASC")
     clubs = cur.fetchall()
+
     conn.close()
 
-    return {"status": "success", "records": clubs}
+    return jsonify(
+        {
+            "status": "success",
+            "records": rows_to_json_safe(clubs),
+        }
+    )
 
+
+@app.route("/health")
+def health():
+    db_status = check_database()
+
+    return jsonify(
+        {
+            "app": "campus-club-treasury-system",
+            "status": "healthy",
+            "database_connected": db_status,
+            "database_name": DB_NAME,
+            "time": datetime.utcnow().isoformat() + "Z",
+        }
+    )
+
+
+@app.route("/metrics")
+def metrics():
+    update_custom_metrics()
+    return Response(generate_latest(), mimetype=CONTENT_TYPE_LATEST)
+
+
+# ============================================================
+# Error handlers
+# ============================================================
+
+@app.errorhandler(404)
+def not_found(error):
+    return jsonify(
+        {
+            "status": "error",
+            "message": "Page not found",
+        }
+    ), 404
+
+
+@app.errorhandler(500)
+def server_error(error):
+    return jsonify(
+        {
+            "status": "error",
+            "message": "Internal server error",
+        }
+    ), 500
+
+
+# ============================================================
+# Run application
+# ============================================================
 
 if __name__ == "__main__":
+    APP_UP.set(1)
     init_db()
-    app.run(host="0.0.0.0", port=5000, debug=True)
+    app.run(host="0.0.0.0", port=5000, debug=False)
