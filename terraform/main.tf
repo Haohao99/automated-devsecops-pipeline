@@ -1,5 +1,6 @@
 # =======================================================================
-# ☁️ DEVSECOPS TERRAFORM CONFIGURATION WITH EC2 + RDS MYSQL + PROMETHEUS + GRAFANA
+# ☁️ DEVSECOPS TERRAFORM CONFIGURATION
+# EC2 + RDS MYSQL + PROMETHEUS + GRAFANA
 # =======================================================================
 
 terraform {
@@ -41,6 +42,25 @@ data "aws_subnets" "default" {
   filter {
     name   = "vpc-id"
     values = [data.aws_vpc.default.id]
+  }
+}
+
+# =======================================================================
+# UBUNTU AMI
+# =======================================================================
+
+data "aws_ami" "ubuntu" {
+  most_recent = true
+  owners      = ["099720109477"] # Canonical
+
+  filter {
+    name   = "name"
+    values = ["ubuntu/images/hvm-ssd/ubuntu-jammy-22.04-amd64-server-*"]
+  }
+
+  filter {
+    name   = "virtualization-type"
+    values = ["hvm"]
   }
 }
 
@@ -237,7 +257,7 @@ resource "aws_db_instance" "campus_ledger_db" {
 # =======================================================================
 
 resource "aws_instance" "web_server" {
-  ami           = "ami-0c7217cdde317cfec"
+  ami           = data.aws_ami.ubuntu.id
   instance_type = "t3.micro"
 
   subnet_id                   = data.aws_subnets.default.ids[0]
@@ -252,11 +272,11 @@ resource "aws_instance" "web_server" {
 #!/bin/bash
 set -e
 
-echo "===== Updating server packages ====="
+echo "===== Updating packages ====="
 apt-get update -y
 
-echo "===== Installing Docker ====="
-apt-get install -y docker.io
+echo "===== Installing Docker and required tools ====="
+apt-get install -y docker.io curl ca-certificates
 
 echo "===== Starting Docker ====="
 systemctl start docker
@@ -265,11 +285,11 @@ systemctl enable docker
 usermod -aG docker ubuntu || true
 
 until docker info >/dev/null 2>&1; do
-  echo "Waiting for Docker to be ready..."
+  echo "Waiting for Docker to start..."
   sleep 2
 done
 
-echo "===== Creating monitoring directories ====="
+echo "===== Creating folders ====="
 mkdir -p /opt/prometheus
 mkdir -p /opt/grafana/provisioning/datasources
 mkdir -p /usr/local/bin
@@ -309,11 +329,27 @@ cat > /usr/local/bin/start-monitoring.sh <<'EOF'
 #!/bin/bash
 set -e
 
+echo "===== Ensuring Docker network and volumes exist ====="
 docker network create monitoring || true
 docker volume create prometheus-storage || true
 docker volume create grafana-storage || true
 
-echo "Starting Prometheus..."
+echo "===== Getting EC2 public IP using IMDSv2 ====="
+TOKEN=$(curl -s -X PUT \
+  -H "X-aws-ec2-metadata-token-ttl-seconds: 21600" \
+  http://169.254.169.254/latest/api/token || true)
+
+PUBLIC_IP=$(curl -s \
+  -H "X-aws-ec2-metadata-token: $TOKEN" \
+  http://169.254.169.254/latest/meta-data/public-ipv4 || true)
+
+if [ -z "$PUBLIC_IP" ]; then
+  PUBLIC_IP=$(hostname -I | awk '{print $1}')
+fi
+
+echo "EC2 public IP is: $PUBLIC_IP"
+
+echo "===== Starting Prometheus ====="
 docker rm -f prometheus || true
 
 docker run -d \
@@ -324,9 +360,9 @@ docker run -d \
   --restart unless-stopped \
   -v /opt/prometheus/prometheus.yml:/etc/prometheus/prometheus.yml:ro \
   -v prometheus-storage:/prometheus \
-  prom/prometheus
+  prom/prometheus:latest
 
-echo "Starting Grafana..."
+echo "===== Starting Grafana ====="
 docker rm -f grafana || true
 
 docker run -d \
@@ -334,11 +370,16 @@ docker run -d \
   --network monitoring \
   -p 3000:3000 \
   --restart unless-stopped \
+  -e GF_SERVER_ROOT_URL=http://$PUBLIC_IP:3000/ \
+  -e GF_SERVER_SERVE_FROM_SUB_PATH=false \
+  -e GF_PLUGINS_PREINSTALL= \
+  -e GF_INSTALL_PLUGINS= \
   -v grafana-storage:/var/lib/grafana \
   -v /opt/grafana/provisioning/datasources/prometheus.yml:/etc/grafana/provisioning/datasources/prometheus.yml:ro \
-  grafana/grafana
+  grafana/grafana:11.6.0
 
-echo "Monitoring stack started successfully."
+echo "===== Monitoring stack started ====="
+docker ps
 EOF
 
 chmod +x /usr/local/bin/start-monitoring.sh
@@ -353,6 +394,7 @@ Requires=docker.service
 [Service]
 Type=oneshot
 ExecStart=/usr/local/bin/start-monitoring.sh
+RemainAfterExit=yes
 
 [Install]
 WantedBy=multi-user.target
@@ -372,17 +414,15 @@ Unit=monitoring-stack.service
 WantedBy=timers.target
 EOF
 
-echo "===== Starting monitoring stack ====="
+echo "===== Starting monitoring stack service and timer ====="
 systemctl daemon-reload
 systemctl enable monitoring-stack.service
 systemctl enable monitoring-stack.timer
-systemctl start monitoring-stack.service
-systemctl start monitoring-stack.timer
+systemctl restart monitoring-stack.service
+systemctl restart monitoring-stack.timer
 
-echo "===== Final Docker status ====="
+echo "===== EC2 setup completed ====="
 docker ps
-
-echo "===== EC2 setup completed successfully ====="
 USERDATA
 
   root_block_device {
