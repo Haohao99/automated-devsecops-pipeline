@@ -266,6 +266,7 @@ docker network create monitoring || true
 
 mkdir -p /opt/prometheus
 mkdir -p /opt/grafana/provisioning/datasources
+mkdir -p /usr/local/bin
 
 cat > /opt/prometheus/prometheus.yml <<'PROMCFG'
 global:
@@ -293,11 +294,16 @@ datasources:
   editable: true
   GRAFANA_DS
 
+cat > /usr/local/bin/start-monitoring.sh <<'SCRIPT'
+#!/bin/bash
+
+docker network create monitoring || true
+
 docker volume create prometheus-storage || true
 docker volume create grafana-storage || true
 
+if ! docker ps --format '{{.Names}}' | grep -q '^prometheus$'; then
 docker rm -f prometheus || true
-docker rm -f grafana || true
 
 docker run -d 
 --name prometheus 
@@ -308,6 +314,10 @@ docker run -d
 -v /opt/prometheus/prometheus.yml:/etc/prometheus/prometheus.yml:ro 
 -v prometheus-storage:/prometheus 
 prom/prometheus
+fi
+
+if ! docker ps --format '{{.Names}}' | grep -q '^grafana$'; then
+docker rm -f grafana || true
 
 docker run -d 
 --name grafana 
@@ -317,6 +327,44 @@ docker run -d
 -v grafana-storage:/var/lib/grafana 
 -v /opt/grafana/provisioning/datasources/prometheus.yml:/etc/grafana/provisioning/datasources/prometheus.yml:ro 
 grafana/grafana
+fi
+SCRIPT
+
+chmod +x /usr/local/bin/start-monitoring.sh
+
+cat > /etc/systemd/system/monitoring-stack.service <<'SERVICE'
+[Unit]
+Description=Start Prometheus and Grafana monitoring stack
+After=docker.service
+Requires=docker.service
+
+[Service]
+Type=oneshot
+ExecStart=/usr/local/bin/start-monitoring.sh
+RemainAfterExit=yes
+
+[Install]
+WantedBy=multi-user.target
+SERVICE
+
+cat > /etc/systemd/system/monitoring-stack.timer <<'TIMER'
+[Unit]
+Description=Check Prometheus and Grafana monitoring stack every minute
+
+[Timer]
+OnBootSec=30
+OnUnitActiveSec=60
+Unit=monitoring-stack.service
+
+[Install]
+WantedBy=timers.target
+TIMER
+
+systemctl daemon-reload
+systemctl enable monitoring-stack.service
+systemctl enable monitoring-stack.timer
+systemctl start monitoring-stack.service
+systemctl start monitoring-stack.timer
 USERDATA
 
 root_block_device {
