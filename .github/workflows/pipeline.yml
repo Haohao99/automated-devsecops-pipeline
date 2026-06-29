@@ -67,7 +67,7 @@ jobs:
       - name: SSH Remote Deployment to AWS Cloud Server
         uses: appleboy/ssh-action@master
         with:
-          host: "34.224.74.147"
+          host: "32.192.87.84"
           username: ubuntu
           key: ${{ secrets.SSH_PRIVATE_KEY }}
           script: |
