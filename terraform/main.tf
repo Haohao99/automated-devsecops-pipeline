@@ -1,5 +1,5 @@
 # =======================================================================
-# ☁️ DEVSECOPS TERRAFORM CONFIGURATION WITH EC2 + RDS MYSQL
+# ☁️ DEVSECOPS TERRAFORM CONFIGURATION WITH EC2 + RDS MYSQL + GRAFANA
 # =======================================================================
 
 terraform {
@@ -43,7 +43,7 @@ resource "aws_key_pair" "deployer" {
 
 resource "aws_security_group" "app_sg" {
   name        = "employee-portal-security-group-secure"
-  description = "Allow inbound SSH, HTTP, and Flask traffic under secure parameters"
+  description = "Allow inbound SSH, Flask, Prometheus, and Grafana traffic"
   vpc_id      = data.aws_vpc.default.id
 
   tags = {
@@ -193,6 +193,41 @@ resource "aws_instance" "web_server" {
   key_name               = aws_key_pair.deployer.key_name
   vpc_security_group_ids = [aws_security_group.app_sg.id]
 
+  # This makes Terraform recreate the EC2 instance when user_data changes.
+  # This is useful because user_data normally runs only during first boot.
+  user_data_replace_on_change = true
+
+  user_data = <<-EOF
+    #!/bin/bash
+
+    # Update packages
+    apt-get update -y
+
+    # Install Docker
+    apt-get install -y docker.io
+
+    # Start and enable Docker
+    systemctl start docker
+    systemctl enable docker
+
+    # Allow ubuntu user to run docker without sudo after re-login
+    usermod -aG docker ubuntu
+
+    # Create persistent Grafana storage
+    docker volume create grafana-storage
+
+    # Remove old Grafana container if it exists
+    docker rm -f grafana || true
+
+    # Start Grafana container
+    docker run -d \
+      --name grafana \
+      -p 3000:3000 \
+      --restart unless-stopped \
+      -v grafana-storage:/var/lib/grafana \
+      grafana/grafana
+  EOF
+
   root_block_device {
     encrypted   = true
     volume_type = "gp3"
@@ -223,6 +258,11 @@ output "application_url" {
 output "grafana_url" {
   value       = "http://${aws_instance.web_server.public_ip}:3000"
   description = "Direct browser link to Grafana dashboard"
+}
+
+output "prometheus_url" {
+  value       = "http://${aws_instance.web_server.public_ip}:9090"
+  description = "Direct browser link to Prometheus"
 }
 
 output "rds_endpoint" {
