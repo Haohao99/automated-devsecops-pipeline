@@ -1,7 +1,5 @@
 # =======================================================================
-
 # ☁️ DEVSECOPS TERRAFORM CONFIGURATION WITH EC2 + RDS MYSQL + PROMETHEUS + GRAFANA
-
 # =======================================================================
 
 terraform {
@@ -17,6 +15,10 @@ provider "aws" {
   region = "us-east-1"
 }
 
+# =======================================================================
+# VARIABLES
+# =======================================================================
+
 variable "db_username" {
   type    = string
   default = "admin"
@@ -26,6 +28,10 @@ variable "db_password" {
   type      = string
   sensitive = true
 }
+
+# =======================================================================
+# DEFAULT VPC + SUBNETS
+# =======================================================================
 
 data "aws_vpc" "default" {
   default = true
@@ -38,15 +44,17 @@ data "aws_subnets" "default" {
   }
 }
 
+# =======================================================================
+# SSH KEY PAIR
+# =======================================================================
+
 resource "aws_key_pair" "deployer" {
   key_name   = "fyp-deploy-key"
   public_key = file("../fyp_deploy_key.pub")
 }
 
 # =======================================================================
-
 # EC2 SECURITY GROUP
-
 # =======================================================================
 
 resource "aws_security_group" "app_sg" {
@@ -146,9 +154,7 @@ resource "aws_security_group_rule" "app_dns_tcp_egress" {
 }
 
 # =======================================================================
-
 # RDS SECURITY GROUP
-
 # =======================================================================
 
 resource "aws_security_group" "rds_sg" {
@@ -183,9 +189,7 @@ resource "aws_security_group_rule" "app_mysql_egress" {
 }
 
 # =======================================================================
-
 # RDS MYSQL DATABASE
-
 # =======================================================================
 
 resource "aws_db_subnet_group" "campus_db_subnet_group" {
@@ -229,9 +233,7 @@ resource "aws_db_instance" "campus_ledger_db" {
 }
 
 # =======================================================================
-
 # EC2 INSTANCE WITH DOCKER + PROMETHEUS + GRAFANA
-
 # =======================================================================
 
 resource "aws_instance" "web_server" {
@@ -250,107 +252,137 @@ resource "aws_instance" "web_server" {
 #!/bin/bash
 set -e
 
+echo "===== Updating server packages ====="
 apt-get update -y
+
+echo "===== Installing Docker ====="
 apt-get install -y docker.io
 
+echo "===== Starting Docker ====="
 systemctl start docker
 systemctl enable docker
 
-usermod -aG docker ubuntu
+usermod -aG docker ubuntu || true
 
 until docker info >/dev/null 2>&1; do
-sleep 2
+  echo "Waiting for Docker to be ready..."
+  sleep 2
 done
 
-docker network create monitoring || true
-
+echo "===== Creating monitoring directories ====="
 mkdir -p /opt/prometheus
 mkdir -p /opt/grafana/provisioning/datasources
 mkdir -p /usr/local/bin
 
-printf '%s\n' 
-'global:' 
-'  scrape_interval: 15s' 
-'' 
-'scrape_configs:' 
-'  - job_name: "employee-portal"' 
-'    metrics_path: /metrics' 
-'    static_configs:' 
-'      - targets: ["host.docker.internal:5000"]' \
+echo "===== Creating Docker network and volumes ====="
+docker network create monitoring || true
+docker volume create prometheus-storage || true
+docker volume create grafana-storage || true
 
-> /opt/prometheus/prometheus.yml
+echo "===== Creating Prometheus config ====="
+cat > /opt/prometheus/prometheus.yml <<'EOF'
+global:
+  scrape_interval: 15s
 
-printf '%s\n' 
-'apiVersion: 1' 
-'' 
-'datasources:' 
-'  - name: Prometheus' 
-'    type: prometheus' 
-'    access: proxy' 
-'    url: http://prometheus:9090' 
-'    isDefault: true' 
-'    editable: true' \
+scrape_configs:
+  - job_name: "employee-portal"
+    metrics_path: /metrics
+    static_configs:
+      - targets: ["host.docker.internal:5000"]
+EOF
 
-> /opt/grafana/provisioning/datasources/prometheus.yml
+echo "===== Creating Grafana datasource config ====="
+cat > /opt/grafana/provisioning/datasources/prometheus.yml <<'EOF'
+apiVersion: 1
 
-printf '%s\n' 
-'#!/bin/bash' 
-'set -e' 
-'' 
-'docker network create monitoring || true' 
-'' 
-'docker volume create prometheus-storage || true' 
-'docker volume create grafana-storage || true' 
-'' 
-'if ! docker ps --format "{{.Names}}" | grep -q "^prometheus$"; then' 
-'  docker rm -f prometheus || true' 
-'  docker run -d --name prometheus --network monitoring --add-host=host.docker.internal:host-gateway -p 9090:9090 --restart unless-stopped -v /opt/prometheus/prometheus.yml:/etc/prometheus/prometheus.yml:ro -v prometheus-storage:/prometheus prom/prometheus' 
-'fi' 
-'' 
-'if ! docker ps --format "{{.Names}}" | grep -q "^grafana$"; then' 
-'  docker rm -f grafana || true' 
-'  docker run -d --name grafana --network monitoring -p 3000:3000 --restart unless-stopped -v grafana-storage:/var/lib/grafana -v /opt/grafana/provisioning/datasources/prometheus.yml:/etc/grafana/provisioning/datasources/prometheus.yml:ro grafana/grafana' 
-'fi' \
+datasources:
+  - name: Prometheus
+    type: prometheus
+    access: proxy
+    url: http://prometheus:9090
+    isDefault: true
+    editable: true
+EOF
 
-> /usr/local/bin/start-monitoring.sh
+echo "===== Creating monitoring startup script ====="
+cat > /usr/local/bin/start-monitoring.sh <<'EOF'
+#!/bin/bash
+set -e
+
+docker network create monitoring || true
+docker volume create prometheus-storage || true
+docker volume create grafana-storage || true
+
+echo "Starting Prometheus..."
+docker rm -f prometheus || true
+
+docker run -d \
+  --name prometheus \
+  --network monitoring \
+  --add-host=host.docker.internal:host-gateway \
+  -p 9090:9090 \
+  --restart unless-stopped \
+  -v /opt/prometheus/prometheus.yml:/etc/prometheus/prometheus.yml:ro \
+  -v prometheus-storage:/prometheus \
+  prom/prometheus
+
+echo "Starting Grafana..."
+docker rm -f grafana || true
+
+docker run -d \
+  --name grafana \
+  --network monitoring \
+  -p 3000:3000 \
+  --restart unless-stopped \
+  -v grafana-storage:/var/lib/grafana \
+  -v /opt/grafana/provisioning/datasources/prometheus.yml:/etc/grafana/provisioning/datasources/prometheus.yml:ro \
+  grafana/grafana
+
+echo "Monitoring stack started successfully."
+EOF
 
 chmod +x /usr/local/bin/start-monitoring.sh
 
-printf '%s\n' 
-'[Unit]' 
-'Description=Start Prometheus and Grafana monitoring stack' 
-'After=docker.service' 
-'Requires=docker.service' 
-'' 
-'[Service]' 
-'Type=oneshot' 
-'ExecStart=/usr/local/bin/start-monitoring.sh' 
-'RemainAfterExit=yes' 
-'' 
-'[Install]' 
-'WantedBy=multi-user.target' \
+echo "===== Creating systemd service ====="
+cat > /etc/systemd/system/monitoring-stack.service <<'EOF'
+[Unit]
+Description=Start Prometheus and Grafana monitoring stack
+After=docker.service
+Requires=docker.service
 
-> /etc/systemd/system/monitoring-stack.service
+[Service]
+Type=oneshot
+ExecStart=/usr/local/bin/start-monitoring.sh
 
-printf '%s\n' 
-'[Unit]' 
-'Description=Check Prometheus and Grafana monitoring stack every minute' 
-'' 
-'[Timer]' 
-'OnBootSec=30' 
-'OnUnitActiveSec=60' 
-'Unit=monitoring-stack.service' 
-'' 
-'[Install]' 
-'WantedBy=timers.target' \
+[Install]
+WantedBy=multi-user.target
+EOF
 
-> /etc/systemd/system/monitoring-stack.timer
+echo "===== Creating systemd timer ====="
+cat > /etc/systemd/system/monitoring-stack.timer <<'EOF'
+[Unit]
+Description=Check Prometheus and Grafana monitoring stack every minute
 
+[Timer]
+OnBootSec=30
+OnUnitActiveSec=60
+Unit=monitoring-stack.service
+
+[Install]
+WantedBy=timers.target
+EOF
+
+echo "===== Starting monitoring stack ====="
 systemctl daemon-reload
 systemctl enable monitoring-stack.service
 systemctl enable monitoring-stack.timer
 systemctl start monitoring-stack.service
 systemctl start monitoring-stack.timer
+
+echo "===== Final Docker status ====="
+docker ps
+
+echo "===== EC2 setup completed successfully ====="
 USERDATA
 
   root_block_device {
@@ -371,9 +403,7 @@ USERDATA
 }
 
 # =======================================================================
-
 # OUTPUTS
-
 # =======================================================================
 
 output "production_server_public_ip" {
