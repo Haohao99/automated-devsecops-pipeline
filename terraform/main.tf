@@ -60,8 +60,7 @@ Project = "Final-Year-Project"
 }
 }
 
-# trivy:ignore:AWS-0107
-
+#trivy:ignore:AWS-0107
 resource "aws_security_group_rule" "app_ssh_ingress" {
 type              = "ingress"
 description       = "Allow SSH for GitHub Actions deployment"
@@ -102,8 +101,7 @@ cidr_blocks       = ["0.0.0.0/0"]
 security_group_id = aws_security_group.app_sg.id
 }
 
-# trivy:ignore:AWS-0104
-
+#trivy:ignore:AWS-0104
 resource "aws_security_group_rule" "app_http_egress" {
 type              = "egress"
 description       = "Allow HTTP outbound for package updates"
@@ -114,8 +112,7 @@ cidr_blocks       = ["0.0.0.0/0"]
 security_group_id = aws_security_group.app_sg.id
 }
 
-# trivy:ignore:AWS-0104
-
+#trivy:ignore:AWS-0104
 resource "aws_security_group_rule" "app_https_egress" {
 type              = "egress"
 description       = "Allow HTTPS outbound for Docker, GitHub and updates"
@@ -126,6 +123,7 @@ cidr_blocks       = ["0.0.0.0/0"]
 security_group_id = aws_security_group.app_sg.id
 }
 
+#trivy:ignore:AWS-0104
 resource "aws_security_group_rule" "app_dns_udp_egress" {
 type              = "egress"
 description       = "Allow DNS UDP outbound"
@@ -136,6 +134,7 @@ cidr_blocks       = ["0.0.0.0/0"]
 security_group_id = aws_security_group.app_sg.id
 }
 
+#trivy:ignore:AWS-0104
 resource "aws_security_group_rule" "app_dns_tcp_egress" {
 type              = "egress"
 description       = "Allow DNS TCP outbound"
