@@ -1,5 +1,5 @@
 # =======================================================================
-# ☁️ DEVSECOPS TERRAFORM CONFIGURATION WITH EC2 + RDS MYSQL + GRAFANA
+# ☁️ DEVSECOPS TERRAFORM CONFIGURATION WITH EC2 + RDS MYSQL + PROMETHEUS + GRAFANA
 # =======================================================================
 
 terraform {
@@ -194,11 +194,12 @@ resource "aws_instance" "web_server" {
   vpc_security_group_ids = [aws_security_group.app_sg.id]
 
   # This makes Terraform recreate the EC2 instance when user_data changes.
-  # This is useful because user_data normally runs only during first boot.
+  # user_data normally runs only when the EC2 instance is first created.
   user_data_replace_on_change = true
 
-  user_data = <<-EOF
+  user_data = <<-USERDATA
     #!/bin/bash
+    set -e
 
     # Update packages
     apt-get update -y
@@ -210,23 +211,72 @@ resource "aws_instance" "web_server" {
     systemctl start docker
     systemctl enable docker
 
-    # Allow ubuntu user to run docker without sudo after re-login
+    # Allow ubuntu user to run Docker without sudo after re-login
     usermod -aG docker ubuntu
 
-    # Create persistent Grafana storage
-    docker volume create grafana-storage
+    # Create Docker network for monitoring containers
+    docker network create monitoring || true
 
-    # Remove old Grafana container if it exists
+    # Create folders
+    mkdir -p /opt/prometheus
+    mkdir -p /opt/grafana/provisioning/datasources
+
+    # Create Prometheus configuration
+    # host.docker.internal allows Prometheus container to scrape the Flask app running on EC2 port 5000.
+    cat > /opt/prometheus/prometheus.yml <<'PROMCFG'
+global:
+  scrape_interval: 15s
+
+scrape_configs:
+  - job_name: "employee-portal"
+    metrics_path: /metrics
+    static_configs:
+      - targets: ["host.docker.internal:5000"]
+PROMCFG
+
+    # Create Grafana datasource configuration
+    # This automatically adds Prometheus inside Grafana.
+    cat > /opt/grafana/provisioning/datasources/prometheus.yml <<'GRAFANA_DS'
+apiVersion: 1
+
+datasources:
+  - name: Prometheus
+    type: prometheus
+    access: proxy
+    url: http://prometheus:9090
+    isDefault: true
+    editable: true
+GRAFANA_DS
+
+    # Create persistent volumes
+    docker volume create grafana-storage
+    docker volume create prometheus-storage
+
+    # Remove old containers if they exist
+    docker rm -f prometheus || true
     docker rm -f grafana || true
 
-    # Start Grafana container
+    # Start Prometheus
+    docker run -d \
+      --name prometheus \
+      --network monitoring \
+      --add-host=host.docker.internal:host-gateway \
+      -p 9090:9090 \
+      --restart unless-stopped \
+      -v /opt/prometheus/prometheus.yml:/etc/prometheus/prometheus.yml \
+      -v prometheus-storage:/prometheus \
+      prom/prometheus
+
+    # Start Grafana
     docker run -d \
       --name grafana \
+      --network monitoring \
       -p 3000:3000 \
       --restart unless-stopped \
       -v grafana-storage:/var/lib/grafana \
+      -v /opt/grafana/provisioning/datasources/prometheus.yml:/etc/grafana/provisioning/datasources/prometheus.yml \
       grafana/grafana
-  EOF
+  USERDATA
 
   root_block_device {
     encrypted   = true
